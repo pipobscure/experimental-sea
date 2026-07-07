@@ -1,0 +1,19 @@
+{
+  "name": "@pipobscure/sea-test",
+  "version": "0.0.0",
+  "description": "Test SEA application using the zip and vfs mounting feature.",
+  "keywords": [
+    "SEA",
+    "Experiment"
+  ],
+  "license": "EUPL-1.2",
+  "author": "Philipp Dunkel <pip@pipobscure.com>",
+  "type": "module",
+  "main": "app.js",
+  "scripts": {
+    "manifest": "node --no-warnings --experimental-vfs --vfs=lib/ --vfs-manifest app.manifest ./",
+    "archive": "node --no-warnings archive.js lib/ < app.manifest > app.zip",
+    "build": "node --no-warnings --build-sea sea.json"
+  },
+  "private": true
+}
