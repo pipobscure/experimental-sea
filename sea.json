@@ -1,12 +1,9 @@
 {
   "main": "sea.js",
-  "output": "app",
+  "output": "node-base",
   "disableExperimentalSEAWarning": true,
   "useSnapshot": false,
   "useCodeCache": false,
   "execArgv": ["--no-warnings", "--experimental-vfs" ],
-  "execArgvExtension": "none",
-  "assets": {
-    "app": "app.zip"
-  }
+  "execArgvExtension": "none"
 }

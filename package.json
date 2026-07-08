@@ -11,9 +11,10 @@
   "type": "module",
   "main": "app.js",
   "scripts": {
+    "sea": "node --no-warnings --build-sea sea.json",
     "manifest": "node --no-warnings --experimental-vfs --vfs=lib/ --vfs-manifest app.manifest ./",
-    "archive": "node --no-warnings archive.js lib/ < app.manifest > app.zip",
-    "build": "node --no-warnings --build-sea sea.json"
+    "archive": "node --no-warnings archive.js lib/ shell-base < app.manifest > app.run && chmod 0755 app.run",
+    "executable": "node --no-warnings archive.js lib/ node-base < app.manifest > app.sea && chmod 0755 app.sea"
   },
   "private": true
 }

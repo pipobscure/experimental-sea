@@ -5,10 +5,8 @@ const PATH = require('node:path');
 const MOD = require('node:module');
 const FS = require('node:fs');
 
-
-const buffer = SEA.getRawAsset('app');
-const archive = new ZLIB.ZipBuffer(buffer);
-const provider = new VFS.ArchiveProvider(archive);
+const archive = ZLIB.ZipFile.openSync(process.argv[0]);
+const provider = new VFS.ZipProvider(archive);
 const vfs = VFS.create(provider);
 
 vfs.mount('/APP');

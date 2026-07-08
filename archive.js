@@ -3,7 +3,7 @@ import * as PATH from 'node:path';
 import * as FS from 'node:fs';
 
 const base = PATH.resolve(process.cwd(), process.argv[2] ?? './');
-
+const pref = PATH.resolve(process.cwd(), process.argv[3] ?? 'shell-base');
 async function *lines(stream) {
     let rest = '';
     for await (const chunk of stream) {
@@ -30,12 +30,25 @@ async function *entries(items) {
         yield await ZLIB.ZipEntry.createStream(item, stream, { mode: 0o444 });
     }
 }
+async function prepend(file, stream) {
+    const def = Promise.withResolvers();
+    const source = FS.createReadStream(file);
+    source.on('end', def.resolve).on('error', def.reject).pipe(stream);
+    await def.promise;
+    return FS.statSync(file).size;
+}
+async function append(source, stream) {
+    const def = Promise.withResolvers();
+    source.on('end', def.resolve).on('error', def.reject).pipe(stream);
+    await def.promise;
+}
 
 async function main() {
+    const base = await prepend(pref, process.stdout);
     process.stdin.setEncoding('utf-8');
     const files = await Array.fromAsync(unique(lines(process.stdin)));
     const items = entries(files.sort());
-    for await (const chunk of ZLIB.createZipArchive(items)) process.stdout.write(chunk);
+    await append(ZLIB.createZipArchive(items, { comment: 'node:app', baseOffset: base }), process.stdout);
     process.stdout.end();
 }
 
