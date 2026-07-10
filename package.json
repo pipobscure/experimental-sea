@@ -13,8 +13,9 @@
   "scripts": {
     "sea": "node --no-warnings --build-sea sea.json",
     "manifest": "node --no-warnings --experimental-vfs --vfs=lib/ --vfs-manifest app.manifest ./",
-    "archive": "node --no-warnings archive.js lib/ shell-base < app.manifest > app.run && chmod 0755 app.run",
-    "executable": "node --no-warnings archive.js lib/ node-base < app.manifest > app.sea && chmod 0755 app.sea"
+    "archive": "node --no-warnings lib/app.js create --base lib/ --prefix shell-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.run && chmod 0755 app.run",
+    "executable": "node --no-warnings lib/app.js create --base lib/ --prefix node-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.sea && chmod 0755 app.sea",
+    "verify": "node --no-warnings lib/app.js verify --root certs/root.pem"
   },
   "private": true
 }

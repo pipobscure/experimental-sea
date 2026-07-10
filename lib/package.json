@@ -2,5 +2,9 @@
     "name":"test-app",
     "version": "0.0.0",
     "type":"module",
-    "main":"app.js"
+    "main":"app.js",
+    "exports": {
+        ".": "./app.js",
+        "./manifest": "./manifest.js"
+    }
 }
