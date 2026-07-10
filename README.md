@@ -160,25 +160,34 @@ end-to-end packaging pipelines built on the fork.
 
 ### The "application"
 
+The bundled app is itself the tool that builds and checks these archives — it is at once
+the **bundler**, the **verifier**, and an importable **library**:
+
 ```
 lib/
-  package.json   { "type":"module", "main":"app.js" }
-  app.js         imports ./other.js, logs its text
-  other.js       exports a string
+  package.json   { "type":"module", "main":"app.js",
+                   "exports": { ".":"./app.js", "./manifest":"./manifest.js" } }
+  app.js         parseArgs CLI with `create` / `verify` subcommands; re-exports the library
+  archive.js     createArchive() / bundle() — streams files, then signs the whole file
+  manifest.js    buildManifest() / parseManifest() / verify() — signing + verification core
 ```
 
-Deliberately trivial — the point is the *packaging*, not the app. `other.js` exists only to
-prove that sibling-module resolution works *through the mount*, not just the single entry file.
+Packaging the verifier *as* one of these archives is the point: the same artifact that
+carries an application can validate its own integrity, and `sea.js` reuses that same logic
+to refuse to boot a tampered container (see [Signing and verification](#signing-and-verification)).
 
 ### The pieces
 
 | File | Role |
 |------|------|
-| `sea.js` | The SEA program. Opens **itself** (`process.argv[0]`) as a `ZipFile`, mounts it via `ZipProvider` at `/APP`, and `require`s the app. |
+| `lib/app.js` | The application. A `parseArgs` CLI (`create` / `verify`); also the SEA/`--vfs` entry point and the package's library root. |
+| `lib/archive.js` | Bundler: writes a **prefix** (shebang stub or Node/SEA binary), then appends a ZIP of the listed files — each stamped with its content digest — with a `baseOffset` equal to the prefix size and an `AUTHORITY.PEM` manifest, then signs the whole file into the EOCD comment. |
+| `lib/manifest.js` | The signing/verification core: `buildManifest(…)`, `parseManifest(…)` and `verify(source)`. |
+| `sea.js` | The SEA program. **Verifies itself** (`process.argv[0]`, whole-file signature inlined from `manifest.js`), and only then opens it as a `ZipFile`, mounts it via `ZipProvider` at `/APP`, and `require`s the app. |
 | `sea.json` | SEA build config: ESM-capable, runs with `--experimental-vfs`, outputs `node-base`. |
-| `archive.js` | Builds a runnable file: writes a **prefix** (a shebang stub or a Node/SEA binary), then appends a ZIP of the listed files with a `baseOffset` equal to the prefix size. |
 | `shell-base` | The shebang prefix: `#!/usr/bin/env -S node --no-warnings --experimental-vfs --vfs`. |
 | `app.manifest` | The observed file list (from `--vfs-manifest`) that says what goes into the archive. |
+| `certs/` | A self-signed test PKI (root CA + leaf, `gen.sh`) used to sign and trust the demo archives. |
 
 ### The scripts (`package.json`)
 
@@ -190,12 +199,18 @@ prove that sibling-module resolution works *through the mount*, not just the sin
 // Run the app with lib/ mounted, recording every file it actually reads into app.manifest.
 // This *discovers* the archive's contents by observation instead of static analysis.
 
-"archive":  "node --no-warnings archive.js lib/ shell-base < app.manifest > app.run && chmod 0755 app.run",
-// Prefix = shell-base (shebang). Result: app.run — a tiny self-executing ZIP app.
+"archive":  "node --no-warnings lib/app.js create --base lib/ --prefix shell-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.run && chmod 0755 app.run",
+// Prefix = shell-base (shebang). Result: app.run — a tiny self-executing ZIP app, signed.
 
-"executable":"node --no-warnings archive.js lib/ node-base < app.manifest > app.sea && chmod 0755 app.sea"
-// Prefix = node-base (the SEA binary). Result: app.sea — a standalone executable.
+"executable":"node --no-warnings lib/app.js create --base lib/ --prefix node-base --key certs/leaf.key --chain certs/chain.pem < app.manifest > app.sea && chmod 0755 app.sea",
+// Prefix = node-base (the SEA binary). Result: app.sea — a standalone executable, signed.
+
+"verify":   "node --no-warnings lib/app.js verify --root certs/root.pem"
+// Verify an archive against the test root, e.g. `npm run verify -- app.run`.
 ```
+
+Drop `--key`/`--chain` from `create` to build an **unsigned** archive; drop `--root` from
+`verify` to see how the same archive reads when its certificate isn't trusted.
 
 ### The two artifacts, and how each runs itself
 
@@ -209,10 +224,15 @@ application in a file you can email — provided the recipient has a compatible 
 
 **`app.sea` — the native executable (~155 MB; needs nothing).**
 It is the SEA `node-base` binary followed by the same ZIP. Running it starts `sea.js`,
-which opens `process.argv[0]` — the running executable — as a `ZipFile`, mounts the
-appended archive at `/APP`, and requires the app out of it. No Node on the target, no
-`node_modules`, no extraction to disk of the JS. The size is just "a Node runtime + your
-files," which is the honest floor for *zero-dependency* distribution.
+which opens `process.argv[0]` — the running executable — as a `ZipFile`, **verifies the
+appended archive**, and only if it is fully valid and trusted mounts it at `/APP` and
+requires the app out of it. No Node on the target, no `node_modules`, no extraction to disk
+of the JS. The size is just "a Node runtime + your files," which is the honest floor for
+*zero-dependency* distribution.
+
+Because `sea.js` self-verifies before it will run, `./app.sea` **refuses to boot** unless the
+embedded certificate chain is trusted. The demo signs with a self-signed test cert, so point
+Node at the test root to trust it: `NODE_EXTRA_CA_CERTS=certs/root.pem ./app.sea`.
 
 Same application, same archive format, two prefixes — one optimizing for **size**
 (reuse the user's Node), one for **self-containment** (bring your own Node).
@@ -221,13 +241,123 @@ Same application, same archive format, two prefixes — one optimizing for **siz
 
 ```sh
 npm run manifest     # observe which files the app reads  -> app.manifest
-npm run archive      # build the shebang archive          -> ./app.run
-./app.run            # prints "this is the text"
+npm run archive      # build + sign the shebang archive   -> ./app.run
+./app.run verify --root certs/root.pem app.sea   # verify some other archive -> VALID
 
 npm run sea          # build the SEA base binary          -> ./node-base
-npm run executable   # build the standalone executable    -> ./app.sea
-./app.sea            # prints "this is the text"
+npm run executable   # build + sign the standalone exe    -> ./app.sea
+NODE_EXTRA_CA_CERTS=certs/root.pem ./app.sea verify app.run   # self-checks, then runs
+./app.sea            # refuses: certificate not trusted (no NODE_EXTRA_CA_CERTS)
 ```
+
+The app is a verifier, so it needs an archive to check. Note the `--vfs` launcher
+(`app.run`) cannot verify **itself** by its own path — `--vfs` mounts the container over
+that path, so it resolves to the archive's *interior*, not the raw bytes; verify any other
+archive, or use the SEA, which mounts at `/APP` and *can* self-verify.
+
+---
+
+## Signing and verification
+
+A single-file application is only as trustworthy as the bytes inside it. Building on the ZIP
+toolkit, every archive this repo produces is protected by a **staged** scheme: one hash covers
+the **whole file** (prefix included), the leaf certificate signs *that hash*, and both are
+written into the archive's end-of-central-directory comment. Each **member** additionally
+carries its own content digest. The staging is the point — a verifier can prove the bytes are
+intact *before* it commits to anything (a cheap, cert-free gate), and only then spend a
+certificate check. This is an application-level feature — it uses `node:zlib`'s
+`ZipEntry`/`X509Certificate` primitives; it is not a change to Node.
+
+### The `AUTHORITY.PEM` manifest
+
+**The `AUTHORITY.PEM` manifest** is a normal archive entry that declares the algorithms and
+carries the certificate chain — the signing authority. Its name is a real, extractable
+filename, so a plain zip utility can pull it out for auditing:
+
+```
+!manifest 2                        magic + format version
+!hash sha256                       digest used for the whole-file hash and member digests
+!sign sha256                       digest the signature (over that hash) uses
+                                   (blank line — present only when signed)
+-----BEGIN CERTIFICATE-----        full PEM chain, leaf first, embedded so a
+…                                  verifier is self-contained
+-----END CERTIFICATE-----
+```
+
+**Every member** (every entry except the manifest) also records the hex digest of its own
+content in its ZIP **entry comment**, computed with `!hash`.
+
+### The whole-file hash, and a signature over it
+
+One hash covers the *entire file* — the prepended launcher or Node/SEA binary, every member,
+the complete central directory (member digests included) and the fixed part of the EOCD
+record — up to but **excluding the EOCD's 2-byte comment-length field**. The EOCD must be the
+last structure in the file, so the hashed region is simply everything before its trailing
+comment. The leaf certificate then signs **that hash** (not the file), and the EOCD comment —
+which the hash deliberately stops short of — records both:
+
+```
+SIGNED:<hash-of-region-hex>:<signature-hex>
+```
+
+Signing the hash rather than the file is what makes the stages cheap: a verifier hashes the
+file once, matches it against `<hash>`, and can then check `<signature>` over that same hash
+without touching the file again. Because the hash spans the whole file, nothing — a byte of
+the runtime prefix, a member's bytes, a recorded digest in the central directory, the
+algorithm lines, or the embedded chain — can be altered without changing it. The per-member
+digests are that guarantee applied one file at a time, so an individual extracted member can
+be checked on its own (and a member fetch can re-verify it).
+
+### The four verification states
+
+`verify()` runs the stages in order and reports exactly one state:
+
+| State | Meaning |
+|-------|---------|
+| **unsigned** | no `AUTHORITY.PEM` manifest, or no `SIGNED:…` marker in the EOCD comment |
+| **invalid** | the recomputed hash doesn't match the recorded one, the signature doesn't verify over it, **or** a member's recorded digest doesn't match its content |
+| **valid-untrusted** | hash + signature + digests are sound, but the certificate chain isn't anchored in the trust store |
+| **valid** | all of the above sound **and** the chain is trusted |
+
+The whole scheme is gated on the `SIGNED:` marker: only a signed archive is checked at all.
+Because the hash covers the central directory, it fixes *which* members exist and every
+member's digest, so editing *any* byte after signing yields **invalid**. Trust is evaluated
+against the system CA store **plus** `NODE_EXTRA_CA_CERTS` (and any extra roots passed to
+`verify`), so the trusted path is testable without touching the OS store.
+
+### The library
+
+`lib/` doubles as an importable package (the intended reuse point for the loader):
+
+```js
+import { buildManifest, verify } from 'test-app/manifest';
+
+// build the AUTHORITY.PEM manifest content (algorithms + chain); the whole-file
+// signature is applied by bundle(), not here
+const content = buildManifest({ hashAlg: 'sha256', signAlg: 'sha256', chain });
+
+// verify an archive path or a Buffer of the whole file
+const { state, reason, subject } = await verify('app.run', { extraRoots });
+```
+
+### Self-verifying the SEA
+
+`sea.js` is a single CommonJS file that runs *before* the archive is mounted, so it cannot
+`import` the library — the verification logic is copied into it, and it makes the staging
+concrete:
+
+1. **precheck** — hash `process.argv[0]` (itself, prefix and all) and match it to the recorded
+   hash. This is cert-free and runs **before mounting**; a tampered container is refused here.
+2. **mount** — only a hash-intact container is mounted via `ZipProvider` at `/APP`.
+3. **authenticate** — verify the signature over that hash against the chain in `AUTHORITY.PEM`
+   and anchor it in the trust store.
+4. **run** — `require` the app only once the container is `valid` *and* trusted.
+
+An unsigned, tampered, or untrusted container exits non-zero without ever running. This split
+is deliberate groundwork: a future `ZipProvider` can fold the per-member digest checks into
+member fetches (erroring before it closes a member's stream on a hash mismatch), and the
+`--vfs` loader can *require* a signature outright. (The `--vfs` shebang launcher has no
+pre-mount stage today, so `app.run` does not self-verify — it hands straight off to the app.)
 
 ---
 
@@ -276,17 +406,20 @@ The through-line is: **let a single file be the file tree a program runs from.**
 
 ```
 builtinsea/
-  lib/            the sample application (entry + sibling module + package.json)
-  sea.js          SEA bootstrap: mount self as ZIP, require the app
+  lib/            the app: bundler + verifier + importable library
+    app.js          parseArgs CLI (create / verify); SEA + --vfs entry; library root
+    archive.js      createArchive() / bundle(): prefix + zip(baseOffset), whole-file signature
+    manifest.js     buildManifest() / parseManifest() / verify(): the signing + verification core
+    package.json    { type:module, main:app.js, exports: { ".", "./manifest" } }
+  sea.js          SEA bootstrap: verify self (whole-file signature), then mount and require the app
   sea.json        --build-sea configuration
-  archive.js      prefix + zip(baseOffset) archive builder
   shell-base      shebang prefix for the portable archive
+  certs/          self-signed test PKI (root CA + leaf) and gen.sh
   app.manifest    observed file list (produced by `npm run manifest`)
   app.run         built: self-executing ZIP app (needs Node)
   app.sea         built: standalone executable (needs nothing)
-  package.json    the sea / manifest / archive / executable scripts
+  package.json    the sea / manifest / archive / executable / verify scripts
 ```
 
 Build outputs (`app`, `app.manifest`, `app.run`, `app.sea`, `node-base`) are generated by
 the scripts above.
-```
